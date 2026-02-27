@@ -1,0 +1,9 @@
+{
+  "name": "FreeRTOS",
+  "version": "10.3.1",
+  "description": "Vendored FreeRTOS kernel + CMSIS-RTOS2 wrapper (CMSIS_RTOS_V2) for stm_firmware_2026",
+  "keywords": ["freertos", "rtos", "cmsis", "cmsis-rtos2"],
+  "build": {
+    "srcDir": "Source"
+  }
+}
