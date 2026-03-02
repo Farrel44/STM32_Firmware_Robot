@@ -49,10 +49,15 @@ static float actual_rpm1 = 0.0f;
 static float actual_rpm2 = 0.0f;
 static float actual_rpm3 = 0.0f;
 
-/* Latest encoder delta ticks (updated at 200Hz). */
-static volatile int32_t tick1_delta = 0;
-static volatile int32_t tick2_delta = 0;
-static volatile int32_t tick3_delta = 0;
+/* Accumulated encoder delta ticks since last feedback send.
+ * Why accumulate: PID runs at 200Hz but feedback sends at 50Hz.
+ * Without accumulation, TaskSerial would only see the last 5ms delta
+ * (1/4 of actual movement), breaking odometry on the Pi side.
+ * TaskPid adds deltas; TaskSerial reads + resets atomically.
+ */
+static volatile int32_t tick1_accum = 0;
+static volatile int32_t tick2_accum = 0;
+static volatile int32_t tick3_accum = 0;
 
 /* IMU filtered outputs (updated by TaskImu, read by TaskSerial).
  * gyro_z_filtered: EMA-filtered angular velocity (rad/s * 1000 -> milli-rad/s).
@@ -163,7 +168,11 @@ static float compute_feedforward(float target_rpm)
   {
     return 0.0f;
   }
-  return CONTROL_FF_OFFSET + (CONTROL_FF_SLOPE * abs_rpm);
+  /* Sign must match direction — without this, feedforward fights PID
+   * on reverse commands (ESP32 original had the same sign logic).
+   */
+  const float magnitude = CONTROL_FF_OFFSET + (CONTROL_FF_SLOPE * abs_rpm);
+  return (target_rpm < 0.0f) ? -magnitude : magnitude;
 }
 
 static int16_t clamp_pwm_255(int32_t pwm)
@@ -322,9 +331,12 @@ static void TaskPid(void *argument)
       d3 = -d3;
     }
 
-    tick1_delta = d1;
-    tick2_delta = d2;
-    tick3_delta = d3;
+    /* Accumulate (not overwrite) so TaskSerial gets the full delta
+     * between feedback sends, not just the last PID cycle's slice.
+     */
+    tick1_accum += d1;
+    tick2_accum += d2;
+    tick3_accum += d3;
 
     enc1_prev = enc1_now;
     enc2_prev = enc2_now;
@@ -451,11 +463,23 @@ static void TaskSerial(void *argument)
       target_rpm3 = 0;
     }
 
-    /* Send feedback at 50Hz (same protocol as ESP). */
+    /* Send feedback at 50Hz (same protocol as ESP).
+     * Read accumulated ticks then reset — this gives the Pi the full
+     * encoder delta since the previous feedback, not just one PID slice.
+     */
+    taskENTER_CRITICAL();
+    const int32_t t1 = tick1_accum;
+    const int32_t t2 = tick2_accum;
+    const int32_t t3 = tick3_accum;
+    tick1_accum = 0;
+    tick2_accum = 0;
+    tick3_accum = 0;
+    taskEXIT_CRITICAL();
+
     FeedbackPacket fb = {
-      .tick1 = tick1_delta,
-      .tick2 = tick2_delta,
-      .tick3 = tick3_delta,
+      .tick1 = t1,
+      .tick2 = t2,
+      .tick3 = t3,
       .gyro_z = imu_gyro_z,
       .accel_z = imu_angle_x,
     };
