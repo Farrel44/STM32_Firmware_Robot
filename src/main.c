@@ -107,6 +107,70 @@ int main(void)
   /* Motor driver disabled at boot — RTOS tasks enable after safety checks. */
   HAL_GPIO_WritePin(EN_MOTOR_GPIO_Port, EN_MOTOR_Pin, GPIO_PIN_RESET);
 
+  /* ─── BOOT MOTOR SELF-TEST ──────────────────────────────────────
+   * Drives Motor 1 at ~40% duty for 500ms, then Motor 2, then Motor 3.
+   * Purpose: verify hardware chain  STM32 → BTS7960 → Motor
+   * independently of FreeRTOS / PID / serial commands.
+   *
+   * Expected behavior: each motor twitches briefly at power-on.
+   *   If NO motor moves → hardware wiring or power supply issue.
+   *   If motors move here but not via PID → RTOS/software issue.
+   *
+   * >>> REMOVE THIS BLOCK after hardware is confirmed working. <<<
+   * ────────────────────────────────────────────────────────────── */
+  {
+    /* --- Motor 1: TIM1 CH1 (RPWM PA8) / CH2 (LPWM PA9) --- */
+    (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+    (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
+
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);       /* LPWM = 0   */
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 4500);    /* RPWM ≈ 40% */
+
+    HAL_GPIO_WritePin(EN_MOTOR_GPIO_Port, EN_MOTOR_Pin, GPIO_PIN_SET);
+    HAL_Delay(500);
+
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
+    HAL_GPIO_WritePin(EN_MOTOR_GPIO_Port, EN_MOTOR_Pin, GPIO_PIN_RESET);
+    HAL_Delay(200);
+
+    /* --- Motor 2: TIM1 CH3 (RPWM PA10) / CH4 (LPWM PA11) --- */
+    (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
+    (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);
+
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, 0);       /* LPWM = 0   */
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 4500);    /* RPWM ≈ 40% */
+
+    HAL_GPIO_WritePin(EN_MOTOR_GPIO_Port, EN_MOTOR_Pin, GPIO_PIN_SET);
+    HAL_Delay(500);
+
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_3, 0);
+    HAL_GPIO_WritePin(EN_MOTOR_GPIO_Port, EN_MOTOR_Pin, GPIO_PIN_RESET);
+    HAL_Delay(200);
+
+    /* --- Motor 3: TIM2 CH1 (RPWM PA0) / CH2 (LPWM PA1) --- */
+    (void)HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+    (void)HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
+
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, 0);       /* LPWM = 0   */
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, 2250);    /* RPWM ≈ 40% (ARR=5624) */
+
+    HAL_GPIO_WritePin(EN_MOTOR_GPIO_Port, EN_MOTOR_Pin, GPIO_PIN_SET);
+    HAL_Delay(500);
+
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, 0);
+    HAL_GPIO_WritePin(EN_MOTOR_GPIO_Port, EN_MOTOR_Pin, GPIO_PIN_RESET);
+    HAL_Delay(200);
+
+    /* Stop all PWM channels (will be restarted by MotorPwm_Init). */
+    (void)HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
+    (void)HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_2);
+    (void)HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_3);
+    (void)HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_4);
+    (void)HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_1);
+    (void)HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_2);
+  }
+  /* ─── END BOOT MOTOR SELF-TEST ───────────────────────────────── */
+
   /* Motor/encoder timers started by TaskPid / MotorPwm_Init after 4x reconfig. */
 
   /* Servo PWM — default pulse ~1500 us (TIM12 CH1/CH2). */
