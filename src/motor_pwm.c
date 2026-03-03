@@ -38,10 +38,18 @@ static void set_dual_pwm(TIM_HandleTypeDef *htim, uint32_t ch_rpwm, uint32_t ch_
   uint16_t mag = (uint16_t)abs((int)cmd);
   const uint32_t ccr = pwm255_to_ccr(htim, mag);
 
+  /*
+   * SAFETY: always write the INACTIVE channel to 0 BEFORE activating the
+   * other channel.  Without CCR preload, register writes take effect
+   * immediately on the running counter comparator.  If we wrote the active
+   * channel first, there would be a brief window where BOTH RPWM and LPWM
+   * have non-zero CCR — which causes cross-conduction in the BTS7960
+   * dual half-bridge.
+   */
   if (cmd >= 0)
   {
-    __HAL_TIM_SET_COMPARE(htim, ch_rpwm, ccr);
     __HAL_TIM_SET_COMPARE(htim, ch_lpwm, 0);
+    __HAL_TIM_SET_COMPARE(htim, ch_rpwm, ccr);
   }
   else
   {
@@ -50,11 +58,9 @@ static void set_dual_pwm(TIM_HandleTypeDef *htim, uint32_t ch_rpwm, uint32_t ch_
   }
 }
 
+/* Start all PWM channels at 0 % duty before enabling the driver. */
 void MotorPwm_Init(void)
 {
-  /* Start all PWM channels with 0% duty first.
-   * Why: avoids accidental pulses during bring-up or when enabling the driver.
-   */
   (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
   (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
   (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
@@ -67,11 +73,9 @@ void MotorPwm_Init(void)
   MotorPwm_SetEnabled(false);
 }
 
+/* EN_MOTOR: active-high.  Invert if hardware is active-low. */
 void MotorPwm_SetEnabled(bool enabled)
 {
-  /* EN_MOTOR is treated as active-high (matches ESP enable logic).
-   * If your hardware is active-low, flip this mapping.
-   */
   HAL_GPIO_WritePin(EN_MOTOR_GPIO_Port, EN_MOTOR_Pin, enabled ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }
 

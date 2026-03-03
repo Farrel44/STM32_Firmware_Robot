@@ -104,33 +104,17 @@ int main(void)
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
 
-  // Fail-safe: keep motor driver disabled during bring-up.
-  // Why: PWM may start before higher-level safety/watchdog is implemented.
+  /* Motor driver disabled at boot — RTOS tasks enable after safety checks. */
   HAL_GPIO_WritePin(EN_MOTOR_GPIO_Port, EN_MOTOR_Pin, GPIO_PIN_RESET);
 
-  // Start motor PWM generators (duty initially 0 as configured in tim.c).
-  // Why: ensure timers are running and pins are in AF mode for scope verification.
-  (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
-  (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
-  (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
-  (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);
-  (void)HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
-  (void)HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
+  /* Motor/encoder timers started by TaskPid / MotorPwm_Init after 4x reconfig. */
 
-  // Start servo PWM (TIM12 CH1/CH2). Initial pulse = 1500us.
+  /* Servo PWM — default pulse ~1500 us (TIM12 CH1/CH2). */
   (void)HAL_TIM_PWM_Start(&htim12, TIM_CHANNEL_1);
   (void)HAL_TIM_PWM_Start(&htim12, TIM_CHANNEL_2);
 
-  // Start hardware encoder interfaces.
-  // Why: offload quadrature decoding to TIM3/TIM4/TIM8, avoid EXTI interrupt flood.
-  (void)HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
-  (void)HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL);
-  (void)HAL_TIM_Encoder_Start(&htim8, TIM_CHANNEL_ALL);
+  /* TIM5 (stepper) not started — 100 kHz ISR would burn CPU without a handler. */
 
-  // Note: TIM5 base interrupt (stepper timebase) is intentionally NOT started here.
-  // Why: default 100kHz IRQ would burn CPU until we implement a proper ISR/callback.
-
-  /* Start CMSIS-RTOS2 kernel (FreeRTOS). */
   (void)osKernelInitialize();
   MX_FREERTOS_Init();
   (void)osKernelStart();

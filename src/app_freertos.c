@@ -37,32 +37,27 @@ static void TaskUltrasonic(void *argument);
 osThreadId_t pidTaskHandle;
 static osThreadId_t serialTaskHandle;
 
-/* Latest command targets (updated on valid command reception). */
+/* Command targets — written by UART ISR, read by TaskPid / TaskSerial. */
 static volatile int16_t target_rpm1 = 0;
 static volatile int16_t target_rpm2 = 0;
 static volatile int16_t target_rpm3 = 0;
 static volatile TickType_t last_valid_cmd_tick = 0;
 static volatile bool comm_healthy = false;
 
-/* Ramped RPM targets: smoothly approach target_rpm to prevent wheel slip. */
+/* Ramped setpoints — slew-rate limited copies of target_rpm (TaskPid only). */
 static float actual_rpm1 = 0.0f;
 static float actual_rpm2 = 0.0f;
 static float actual_rpm3 = 0.0f;
 
-/* Accumulated encoder delta ticks since last feedback send.
- * Why accumulate: PID runs at 200Hz but feedback sends at 50Hz.
- * Without accumulation, TaskSerial would only see the last 5ms delta
- * (1/4 of actual movement), breaking odometry on the Pi side.
- * TaskPid adds deltas; TaskSerial reads + resets atomically.
+/*
+ * Encoder tick accumulators — bridge between 200 Hz PID and 50 Hz feedback.
+ * TaskPid increments; TaskSerial reads + resets inside a critical section.
  */
 static volatile int32_t tick1_accum = 0;
 static volatile int32_t tick2_accum = 0;
 static volatile int32_t tick3_accum = 0;
 
-/* IMU filtered outputs (updated by TaskImu, read by TaskSerial).
- * gyro_z_filtered: EMA-filtered angular velocity (rad/s * 1000 -> milli-rad/s).
- * angle_x_filtered: complementary-filtered pitch angle (rad * 1000 -> milli-rad).
- */
+/* Filtered IMU outputs in milli-rad(/s) — written by TaskImu, read by TaskSerial. */
 static volatile int16_t imu_gyro_z = 0;
 static volatile int16_t imu_angle_x = 0;
 static volatile bool imu_ready = false;
@@ -73,7 +68,7 @@ static uint8_t uart2_rx_dma_buf[64];
 /* CMSIS-RTOS2 init -----------------------------------------------------------*/
 void MX_FREERTOS_Init(void)
 {
-  /* PID task: deterministic tick from TIM6 ISR via thread flags. */
+  /* Motor PID — highest priority; woken by TIM6 200 Hz ISR via thread flag. */
   const osThreadAttr_t pidTaskAttributes = {
     .name = "pid",
     .priority = (osPriority_t) osPriorityHigh,
@@ -81,7 +76,7 @@ void MX_FREERTOS_Init(void)
   };
   pidTaskHandle = osThreadNew(TaskPid, NULL, &pidTaskAttributes);
 
-  /* Serial task: placeholder for UART DMA idle-line RX (later). */
+  /* Serial — 50 Hz feedback TX + comm watchdog. */
   const osThreadAttr_t serialTaskAttributes = {
     .name = "serial",
     .priority = (osPriority_t) osPriorityNormal,
@@ -89,15 +84,15 @@ void MX_FREERTOS_Init(void)
   };
   serialTaskHandle = osThreadNew(TaskSerial, NULL, &serialTaskAttributes);
 
-  /* IMU task: placeholder for MPU6050 polling/filter (later). */
+  /* IMU — 100 Hz MPU6050 read + complementary filter (uses atan2f/sqrtf). */
   const osThreadAttr_t imuTaskAttributes = {
     .name = "imu",
     .priority = (osPriority_t) osPriorityBelowNormal,
-    .stack_size = 1024
+    .stack_size = 1536
   };
   (void)osThreadNew(TaskImu, NULL, &imuTaskAttributes);
 
-  /* Ultrasonic task: placeholder for trigger scheduling (later). */
+  /* Ultrasonic — placeholder, not yet implemented. */
   const osThreadAttr_t usTaskAttributes = {
     .name = "ultra",
     .priority = (osPriority_t) osPriorityLow,
@@ -120,7 +115,8 @@ static int16_t clamp_rpm(int16_t x, int16_t limit)
   return x;
 }
 
-/* USART2 RX-to-idle DMA callback (called from ISR context). */
+/* USART2 RX-to-idle DMA callback (ISR context).
+ * Parses command packets, stores clamped RPM targets, refreshes watchdog. */
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t size)
 {
   if (huart->Instance == USART2)
@@ -130,7 +126,6 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t size)
 
     if (cmd.valid)
     {
-      /* Clamp RPM to safe operating range before storing. */
       target_rpm1 = clamp_rpm(cmd.rpm1, CONTROL_MAX_RPM);
       target_rpm2 = clamp_rpm(cmd.rpm2, CONTROL_MAX_RPM);
       target_rpm3 = clamp_rpm(cmd.rpm3, CONTROL_MAX_RPM);
@@ -138,7 +133,7 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t size)
       comm_healthy = true;
     }
 
-    /* Re-arm reception. */
+    /* Re-arm DMA reception (half-transfer IRQ disabled — only idle-line fires). */
     (void)HAL_UARTEx_ReceiveToIdle_DMA(&huart2, uart2_rx_dma_buf, sizeof(uart2_rx_dma_buf));
     __HAL_DMA_DISABLE_IT(huart2.hdmarx, DMA_IT_HT);
   }
@@ -157,10 +152,10 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 /* Tasks ---------------------------------------------------------------------*/
 static bool is_near_zero_rpm(float x)
 {
-  /* Why: avoid float residue keeping motors enabled/active when command is effectively zero. */
   return (x > -0.3f) && (x < 0.3f);
 }
 
+/* Feedforward linearisation — returns signed PWM offset for given target. */
 static float compute_feedforward(float target_rpm)
 {
   const float abs_rpm = (target_rpm < 0.0f) ? -target_rpm : target_rpm;
@@ -168,9 +163,7 @@ static float compute_feedforward(float target_rpm)
   {
     return 0.0f;
   }
-  /* Sign must match direction — without this, feedforward fights PID
-   * on reverse commands (ESP32 original had the same sign logic).
-   */
+  /* Preserve sign so feedforward and PID agree on direction. */
   const float magnitude = CONTROL_FF_OFFSET + (CONTROL_FF_SLOPE * abs_rpm);
   return (target_rpm < 0.0f) ? -magnitude : magnitude;
 }
@@ -205,14 +198,8 @@ static int16_t rate_limit_pwm(int16_t desired, int16_t *prev)
   return desired;
 }
 
-/*
- * Ramp a single motor's actual target toward its command target.
- *
- * Behavior:
- * - Gradual ramp up/down to prevent wheel slip on sudden commands.
- * - Instant snap on direction change to avoid conflicting motor states.
- * - Snap to zero when target is 0 and actual is near zero (avoids float residue).
- */
+/* Slew-rate limit a single RPM channel toward its command target.
+ * Snaps instantly on sign reversal or near-zero convergence. */
 static float ramp_single(float actual, float target)
 {
   /* Instant snap on direction change. */
@@ -249,6 +236,17 @@ static float ramp_single(float actual, float target)
   return actual;
 }
 
+/*
+ * TaskPid — 200 Hz closed-loop motor control (feedforward + PID).
+ * Priority: osPriorityHigh.  Woken deterministically by TIM6 ISR thread flag.
+ *
+ * Pipeline per tick:
+ *   encoder delta → RPM (EMA-filtered) → ramp → FF+PID → rate-limited PWM.
+ *
+ * Shared resources:
+ *   target_rpm (volatile, written by UART ISR)
+ *   tick_accum (volatile, read+reset by TaskSerial under critical section)
+ */
 static void TaskPid(void *argument)
 {
   (void)argument;
@@ -270,14 +268,11 @@ static void TaskPid(void *argument)
 
   const float dt_sec = 1.0f / 200.0f;
 
-  /* Configure encoder timers to full quadrature to match CONTROL_TICKS_PER_REV.
-   * Why: keeps RPM math consistent with the existing ROS/ESP calibration.
-   */
+  /* Reconfigure encoder timers from CubeMX 1x default to full 4x quadrature. */
   EncoderQuad_ConfigureFullQuad(&htim3);
   EncoderQuad_ConfigureFullQuad(&htim4);
   EncoderQuad_ConfigureFullQuad(&htim8);
 
-  /* Start encoder timers (HW encoder mode). */
   (void)HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
   (void)HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL);
   (void)HAL_TIM_Encoder_Start(&htim8, TIM_CHANNEL_ALL);
@@ -286,10 +281,9 @@ static void TaskPid(void *argument)
   uint16_t enc2_prev = (uint16_t)__HAL_TIM_GET_COUNTER(&htim4);
   uint16_t enc3_prev = (uint16_t)__HAL_TIM_GET_COUNTER(&htim8);
 
-  /* Initialize PWM outputs and keep motors disabled until comm is healthy. */
   MotorPwm_Init();
 
-  /* Start the deterministic 200Hz tick source. */
+  /* Start 200 Hz deterministic tick source (TIM6 update interrupt). */
   (void)HAL_TIM_Base_Start_IT(&htim6);
 
   float rpm1 = 0.0f;
@@ -313,7 +307,7 @@ static void TaskPid(void *argument)
     const uint16_t enc2_now = (uint16_t)__HAL_TIM_GET_COUNTER(&htim4);
     const uint16_t enc3_now = (uint16_t)__HAL_TIM_GET_COUNTER(&htim8);
 
-    /* Signed 16-bit delta handles wrap-around (assumes delta < 32768 per tick). */
+    /* 16-bit subtraction handles counter wrap (valid while |delta| < 32768). */
     int32_t d1 = (int32_t)(int16_t)(enc1_now - enc1_prev);
     int32_t d2 = (int32_t)(int16_t)(enc2_now - enc2_prev);
     int32_t d3 = (int32_t)(int16_t)(enc3_now - enc3_prev);
@@ -331,9 +325,7 @@ static void TaskPid(void *argument)
       d3 = -d3;
     }
 
-    /* Accumulate (not overwrite) so TaskSerial gets the full delta
-     * between feedback sends, not just the last PID cycle's slice.
-     */
+    /* Accumulate for TaskSerial (full delta between 50 Hz feedback sends). */
     tick1_accum += d1;
     tick2_accum += d2;
     tick3_accum += d3;
@@ -342,25 +334,21 @@ static void TaskPid(void *argument)
     enc2_prev = enc2_now;
     enc3_prev = enc3_now;
 
-    /* Convert delta ticks -> RPM.
-     * Why: control loop uses RPM setpoints from the serial protocol.
-     */
+    /* Delta ticks → RPM. */
     const float rpm_multi = 60.0f / (CONTROL_TICKS_PER_REV * dt_sec);
     rpm1 = (float)d1 * rpm_multi;
     rpm2 = (float)d2 * rpm_multi;
     rpm3 = (float)d3 * rpm_multi;
 
-    /* Filter RPM (EMA) to reduce derivative noise. */
+    /* EMA-filter measured RPM to reduce derivative noise. */
     rpm1_f = (CONTROL_EMA_ALPHA * rpm1) + (CONTROL_EMA_BETA * rpm1_f);
     rpm2_f = (CONTROL_EMA_ALPHA * rpm2) + (CONTROL_EMA_BETA * rpm2_f);
     rpm3_f = (CONTROL_EMA_ALPHA * rpm3) + (CONTROL_EMA_BETA * rpm3_f);
 
-    /* Read command targets (clamped on reception). */
     const float sp1 = (float)target_rpm1;
     const float sp2 = (float)target_rpm2;
     const float sp3 = (float)target_rpm3;
 
-    /* Apply smooth ramping toward command targets. */
     actual_rpm1 = ramp_single(actual_rpm1, sp1);
     actual_rpm2 = ramp_single(actual_rpm2, sp2);
     actual_rpm3 = ramp_single(actual_rpm3, sp3);
@@ -369,7 +357,7 @@ static void TaskPid(void *argument)
                           is_near_zero_rpm(actual_rpm2) &&
                           is_near_zero_rpm(actual_rpm3);
 
-    /* Safety: never drive motors if comm is unhealthy. */
+    /* Safety: disable motors when comm is lost or all targets are zero. */
     if (!comm_healthy || all_zero)
     {
       if (motors_enabled)
@@ -379,7 +367,7 @@ static void TaskPid(void *argument)
         motors_enabled = false;
       }
 
-      /* Reset ramp state along with PID to avoid stale targets on reconnect. */
+      /* Flush ramp + PID state to prevent stale actuation on reconnect. */
       actual_rpm1 = 0.0f;
       actual_rpm2 = 0.0f;
       actual_rpm3 = 0.0f;
@@ -392,7 +380,7 @@ static void TaskPid(void *argument)
       continue;
     }
 
-    /* Reset PID in dead zone to prevent integral windup. */
+    /* Clear PID integral in dead zone to prevent windup at low setpoints. */
     if (actual_rpm1 > -CONTROL_DEAD_ZONE_RPM && actual_rpm1 < CONTROL_DEAD_ZONE_RPM)
     {
       PID_Reset(&pid1);
@@ -406,7 +394,6 @@ static void TaskPid(void *argument)
       PID_Reset(&pid3);
     }
 
-    /* Use ramped targets for feedforward and PID. */
     const float ff1 = compute_feedforward(actual_rpm1);
     const float ff2 = compute_feedforward(actual_rpm2);
     const float ff3 = compute_feedforward(actual_rpm3);
@@ -425,9 +412,7 @@ static void TaskPid(void *argument)
 
     if (!motors_enabled)
     {
-      /* Why enable only after we have a non-zero, valid command:
-       * prevents motor twitch during boot and makes watchdog behavior deterministic.
-       */
+      /* Deferred enable: prevents twitch at boot and during watchdog recovery. */
       MotorPwm_StopAll();
       MotorPwm_SetEnabled(true);
       motors_enabled = true;
@@ -439,6 +424,15 @@ static void TaskPid(void *argument)
   }
 }
 
+/*
+ * TaskSerial — 50 Hz feedback TX and communication watchdog.
+ * Priority: osPriorityNormal.  Uses osDelayUntil for jitter-free period.
+ *
+ * Shared resources:
+ *   tick_accum   — read+reset under critical section (vs TaskPid).
+ *   target_rpm   — zeroed under critical section on watchdog timeout (vs UART ISR).
+ *   imu_gyro/angle — read (atomic int16_t, no lock needed).
+ */
 static void TaskSerial(void *argument)
 {
   (void)argument;
@@ -447,26 +441,28 @@ static void TaskSerial(void *argument)
   last_valid_cmd_tick = xTaskGetTickCount();
   comm_healthy = false;
 
-  /* Start UART2 RX-to-idle DMA. */
   (void)HAL_UARTEx_ReceiveToIdle_DMA(&huart2, uart2_rx_dma_buf, sizeof(uart2_rx_dma_buf));
   __HAL_DMA_DISABLE_IT(huart2.hdmarx, DMA_IT_HT);
 
+  TickType_t last_wake = osKernelGetTickCount();
+
   for (;;)
   {
+    /* Comm watchdog — halt motors if no valid command within timeout.
+     * Critical section prevents UART ISR from writing new targets mid-clear.
+     */
     const TickType_t now = xTaskGetTickCount();
     if ((now - last_valid_cmd_tick) > pdMS_TO_TICKS(WATCHDOG_TIMEOUT_MS))
     {
-      /* Communication watchdog -> stop targets. */
+      taskENTER_CRITICAL();
       comm_healthy = false;
       target_rpm1 = 0;
       target_rpm2 = 0;
       target_rpm3 = 0;
+      taskEXIT_CRITICAL();
     }
 
-    /* Send feedback at 50Hz (same protocol as ESP).
-     * Read accumulated ticks then reset — this gives the Pi the full
-     * encoder delta since the previous feedback, not just one PID slice.
-     */
+    /* Atomically snapshot and reset tick accumulators. */
     taskENTER_CRITICAL();
     const int32_t t1 = tick1_accum;
     const int32_t t2 = tick2_accum;
@@ -488,15 +484,23 @@ static void TaskSerial(void *argument)
     SerialProto_BuildFeedback(&fb, pkt);
     (void)HAL_UART_Transmit(&huart2, pkt, FEEDBACK_PACKET_SIZE, 10);
 
-    osDelay(20);
+    /* Fixed-period 50 Hz — avoids cumulative drift from TX duration. */
+    last_wake += 20;
+    osDelayUntil(last_wake);
   }
 }
 
+/*
+ * TaskImu — 100 Hz MPU6050 polling with complementary + EMA filtering.
+ * Priority: osPriorityBelowNormal (non-critical for motor safety).
+ *
+ * Outputs (milli-rad units): imu_gyro_z (yaw rate), imu_angle_x (pitch).
+ * Self-disables after CONTROL_IMU_ERROR_THRESHOLD consecutive I2C failures.
+ */
 static void TaskImu(void *argument)
 {
   (void)argument;
 
-  /* Initialize MPU6050. */
   if (!Mpu6050_Init(&hi2c1))
   {
     imu_ready = false;
@@ -508,8 +512,8 @@ static void TaskImu(void *argument)
   imu_ready = true;
 
   uint8_t error_count = 0;
-  float filtered_angle_x = 0.0f;  /* Pitch angle (rad). */
-  float filtered_gyro_z = 0.0f;   /* Yaw rate (rad/s). */
+  float filtered_angle_x = 0.0f;
+  float filtered_gyro_z = 0.0f;
   TickType_t last_tick = xTaskGetTickCount();
 
   const float alpha = CONTROL_IMU_FILTER_ALPHA;
@@ -517,7 +521,7 @@ static void TaskImu(void *argument)
 
   for (;;)
   {
-    osDelay(10);  /* 100Hz IMU update rate. */
+    osDelay(10);
 
     Mpu6050_RawData raw;
     if (!Mpu6050_ReadRaw(&hi2c1, &raw))
@@ -535,37 +539,28 @@ static void TaskImu(void *argument)
     Mpu6050_Data data;
     Mpu6050_ConvertToPhysical(&raw, &data);
 
-    /* Compute dt from tick delta. */
     const TickType_t now_tick = xTaskGetTickCount();
     float dt = (float)(now_tick - last_tick) / 1000.0f;
     last_tick = now_tick;
 
-    /* Sanity check dt (guard against tick wrap or scheduling jitter). */
+    /* Clamp dt against tick wrap or scheduling jitter. */
     if (dt < 0.001f || dt > 0.1f)
     {
       dt = 0.01f;
     }
 
-    /* Compute pitch angle from accelerometer (gravity reference).
-     * atan2(ay, sqrt(ax^2 + az^2)) gives tilt about X axis.
-     */
+    /* Accelerometer-derived pitch (gravity reference). */
     const float ax2 = data.accel_x * data.accel_x;
     const float az2 = data.accel_z * data.accel_z;
     const float accel_angle_x = atan2f(data.accel_y, sqrtf(ax2 + az2));
 
-    /* Complementary filter for pitch angle:
-     * - Gyro integration for short-term (high-pass).
-     * - Accelerometer for long-term drift correction (low-pass).
-     */
+    /* Complementary filter: gyro high-pass + accel low-pass. */
     filtered_angle_x = alpha * (filtered_angle_x + data.gyro_x * dt)
                      + one_minus_alpha * accel_angle_x;
 
-    /* EMA filter for gyro Z (yaw rate).
-     * Reduces high-frequency noise for odometry fusion.
-     */
+    /* EMA-filtered yaw rate for odometry fusion. */
     filtered_gyro_z = alpha * filtered_gyro_z + one_minus_alpha * data.gyro_z;
 
-    /* Scale to milli-rad(/s) and store for feedback packet. */
     imu_gyro_z = (int16_t)(filtered_gyro_z * 1000.0f);
     imu_angle_x = (int16_t)(filtered_angle_x * 1000.0f);
   }

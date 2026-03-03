@@ -12,7 +12,7 @@ extern "C" {
 #define PACKET_HEADER          0xA5
 #define CMD_PACKET_SIZE        8
 #define FEEDBACK_PACKET_SIZE   18
-#define WATCHDOG_TIMEOUT_MS    1000
+#define WATCHDOG_TIMEOUT_MS    250   /* ~12 missed 50 Hz packets */
 
 typedef struct
 {

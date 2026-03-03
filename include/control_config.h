@@ -5,91 +5,67 @@
 #include <stdint.h>
 
 /*
- * Control-loop configuration (ported from ESP_Robot_2026).
- *
- * Why keep these in one header:
- * - Single source of truth for calibration constants used by PID, RPM conversion, and motor output.
- * - Makes it obvious what must change when mechanical/hardware changes.
+ * Control-loop configuration — single source of truth for PID, encoder,
+ * feedforward, and motor output tuning.  All rate-dependent values are
+ * scaled for the STM32's 200 Hz control tick (vs 100 Hz on ESP).
  */
 
-/* Encoder calibration.
- *
- * ESP implementation uses full quadrature counting and derives RPM using:
- *   rpm = deltaTicks * (60 / (TICKS_PER_REV * dt))
- */
+/* Encoder: 7 PPR motor x 4 (quadrature) x 95/7 (gearbox) = 380 ticks/rev. */
 #define CONTROL_TICKS_PER_REV            (380.0f)
 
-/* Direction calibration.
- * Why: mechanical mounting / wiring can flip the sign of encoder counts.
- */
+/* Encoder direction inversion — compensate mounting/wiring polarity. */
 #define CONTROL_INVERT_ENC1              (false)
 #define CONTROL_INVERT_ENC2              (false)
 #define CONTROL_INVERT_ENC3              (true)
 
-/* PWM direction calibration.
- * Why: some drivers swap RPWM/LPWM semantics depending on wiring.
- */
+/* PWM direction inversion — compensate RPWM/LPWM wiring. */
 #define CONTROL_INVERT_PWM1              (false)
 #define CONTROL_INVERT_PWM2              (false)
 #define CONTROL_INVERT_PWM3              (false)
 
-/* PID tuning (same as ESP). Units assume RPM as process variable. */
+/* PID gains (process variable: RPM). */
 #define CONTROL_PID_KP                   (0.40f)
 #define CONTROL_PID_KI                   (3.60f)
 #define CONTROL_PID_KD                   (0.04f)
 
-/* PID anti-windup (same as ESP). */
+/* Integral anti-windup limit. */
 #define CONTROL_PID_INTEGRAL_LIMIT       (50.0f)
 
-/* Output range matches ESP (0..255). Motor driver maps it to timer duty cycle. */
+/* PWM output range (0..255), mapped to timer CCR by motor_pwm module. */
 #define CONTROL_PWM_MAX                  (255)
 
-/* Feedforward: PWM = OFFSET + SLOPE * |RPM| (same as ESP). */
+/* Feedforward linearisation: PWM = OFFSET + SLOPE x |RPM|. */
 #define CONTROL_FF_SLOPE                 (0.3f)
 #define CONTROL_FF_OFFSET                (5.0f)
 #define CONTROL_FF_DEADBAND_RPM          (3.0f)
 
-/* Dead-zone reset (same as ESP). */
+/* Dead-zone — reset PID integral when |target| is below this. */
 #define CONTROL_DEAD_ZONE_RPM            (2.0f)
 
-/* EMA filter constants (same as ESP). */
+/* EMA filter coefficients for measured RPM (reduces derivative noise). */
 #define CONTROL_EMA_ALPHA                (0.30f)
 #define CONTROL_EMA_BETA                 (0.70f)
 
-/* PWM rate limit.
- *
- * ESP: 4 counts per 10ms (100Hz). Here control tick is 5ms (200Hz),
- * so we use 2 counts per tick to keep the same slope (counts/second).
- */
+/* PWM rate limit per tick — 2 counts/5 ms = ESP's 4 counts/10 ms. */
 #define CONTROL_PWM_RATE_LIMIT_PER_TICK  (2)
 
-/* RPM clamp: absolute maximum target RPM accepted from serial commands. */
+/* Maximum target RPM accepted from serial commands. */
 #define CONTROL_MAX_RPM                  (600)
 
-/* RPM ramp: smooth acceleration/deceleration to prevent wheel slip.
- *
- * ESP: 5.0 RPM/10ms (up), 8.0 RPM/10ms (down) at 100Hz.
- * STM32 runs at 200Hz (5ms tick), so rates are halved to match slope.
- */
+/* RPM ramp — halved from ESP (200 Hz tick vs 100 Hz) to keep same dRPM/dt. */
 #define CONTROL_RAMP_UP_RATE             (2.5f)
 #define CONTROL_RAMP_DOWN_RATE           (4.0f)
 
-/* Snap-to-zero threshold: avoid float residue keeping motors active. */
+/* Snap-to-zero threshold for float residue in ramped setpoint. */
 #define CONTROL_ZERO_THRESHOLD           (0.3f)
 
-/* IMU complementary filter.
- *
- * Alpha = 0.95 means 95% gyro trust, 5% accelerometer trust.
- * Time constant tau = dt / (1 - alpha) = 0.01 / 0.05 = 0.2 seconds.
- *
- * Rationale:
- * - Gyro is accurate short-term but drifts over time.
- * - Accelerometer gives absolute reference but is noisy (motor vibration).
- * - 0.2s time constant filters vibration while staying responsive to real tilt.
+/* Complementary filter alpha — 95 % gyro / 5 % accel.
+ * tau = dt/(1-a) ~ 0.2 s; fast enough for tilt, slow enough to reject
+ * motor vibration on the accelerometer.
  */
 #define CONTROL_IMU_FILTER_ALPHA         (0.95f)
 
-/* IMU error threshold: auto-disable after N consecutive I2C failures. */
+/* Auto-disable IMU after this many consecutive I2C failures. */
 #define CONTROL_IMU_ERROR_THRESHOLD      (10)
 
 #endif /* CONTROL_CONFIG_H */
