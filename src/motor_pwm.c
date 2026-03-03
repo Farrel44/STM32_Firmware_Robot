@@ -70,7 +70,7 @@ void MotorPwm_Init(void)
   (void)HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
 
   MotorPwm_StopAll();
-  MotorPwm_SetEnabled(false);
+  MotorPwm_SetEnabled(true);   /* EN always HIGH — same as ESP32. Stop = PWM 0. */
 }
 
 /* EN_MOTOR: active-high.  Invert if hardware is active-low. */

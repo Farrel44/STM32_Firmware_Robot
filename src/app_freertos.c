@@ -297,8 +297,6 @@ static void TaskPid(void *argument)
   int16_t last_pwm2 = 0;
   int16_t last_pwm3 = 0;
 
-  bool motors_enabled = false;
-
   for (;;)
   {
     (void)osThreadFlagsWait(PID_TICK_FLAG, osFlagsWaitAny, osWaitForever);
@@ -357,15 +355,11 @@ static void TaskPid(void *argument)
                           is_near_zero_rpm(actual_rpm2) &&
                           is_near_zero_rpm(actual_rpm3);
 
-    /* Safety: disable motors when comm is lost or all targets are zero. */
+    /* Safety: zero PWM when comm is lost or all targets are zero.
+     * EN stays HIGH (same as ESP32) — stop = PWM 0, not EN toggle. */
     if (!comm_healthy || all_zero)
     {
-      if (motors_enabled)
-      {
-        MotorPwm_StopAll();
-        MotorPwm_SetEnabled(false);
-        motors_enabled = false;
-      }
+      MotorPwm_StopAll();
 
       /* Flush ramp + PID state to prevent stale actuation on reconnect. */
       actual_rpm1 = 0.0f;
@@ -410,13 +404,6 @@ static void TaskPid(void *argument)
     const int16_t pwm2 = rate_limit_pwm(pwm2_raw, &last_pwm2);
     const int16_t pwm3 = rate_limit_pwm(pwm3_raw, &last_pwm3);
 
-    if (!motors_enabled)
-    {
-      /* Deferred enable: prevents twitch at boot and during watchdog recovery. */
-      MotorPwm_StopAll();
-      MotorPwm_SetEnabled(true);
-      motors_enabled = true;
-    }
 
     MotorPwm_Set(1, pwm1);
     MotorPwm_Set(2, pwm2);
