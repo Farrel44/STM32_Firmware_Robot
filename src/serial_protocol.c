@@ -100,5 +100,5 @@ void SerialProto_BuildFeedback(const FeedbackPacket *fb, uint8_t out_buf[FEEDBAC
   out_buf[idx++] = (uint8_t)(fb->accel_z & 0xFF);
 
   /* Checksum */
-  out_buf[idx++] = checksum_xor(out_buf, FEEDBACK_PACKET_SIZE - 1);
+  out_buf[idx++] = checksum_xor(out_buf, FEEDBACK_PACKET_SIZE - 1) ^ 0xFF;
 }
