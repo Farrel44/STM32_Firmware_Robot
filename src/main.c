@@ -28,6 +28,7 @@
 
 #include "cmsis_os2.h"
 #include "app_freertos.h"
+#include "pwm_reg_debug.h"
 
 /* USER CODE END Includes */
 
@@ -170,6 +171,19 @@ int main(void)
     (void)HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_2);
   }
   /* ─── END BOOT MOTOR SELF-TEST ───────────────────────────────── */
+
+  /* ─── REGISTER DEBUG ────────────────────────────────────────────
+   * Dumps all PWM/GPIO registers over UART, then drives Motor 1 at
+   * 40% while dumping live values.  RTOS is blocked so output is
+   * clean.  Open /dev/ttyACM0 in minicom/picocom to read.
+   *
+   * >>> REMOVE OR COMMENT THIS BLOCK for normal operation. <<<
+   * ──────────────────────────────────────────────────────────────── */
+  PWM_RegDebug_DumpAll();
+  PWM_RegDebug_DriveAndDump();
+  /* Halt here — do NOT proceed to RTOS.  Read serial output first. */
+  while (1) { HAL_Delay(1000); }
+  /* ─── END REGISTER DEBUG ────────────────────────────────────── */
 
   /* Motor/encoder timers started by TaskPid / MotorPwm_Init after 4x reconfig. */
 
