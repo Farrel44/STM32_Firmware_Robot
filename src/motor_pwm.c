@@ -58,9 +58,23 @@ static void set_dual_pwm(TIM_HandleTypeDef *htim, uint32_t ch_rpwm, uint32_t ch_
   }
 }
 
-/* Start all PWM channels at 0 % duty before enabling the driver. */
+/*
+ * Start all PWM channels at 0 % duty, enable TIM1 main output, then
+ * assert the driver enable pin.
+ *
+ * Sequence:
+ *   1. HAL_TIM_PWM_Start all 6 channels (CCR pre-loaded to 0 by CubeMX).
+ *   2. Explicitly set MOE in TIM1->BDTR — required for advanced timers to
+ *      propagate OCx compare matches to the physical pins.
+ *      HAL_TIM_PWM_Start does this internally, but an explicit call makes
+ *      the dependency self-documenting and guards against HAL quirks.
+ *   3. Zero all CCR as a belt-and-suspenders measure.
+ *   4. Assert EN_MOTOR HIGH — same strategy as ESP32 (stop = PWM 0, not
+ *      EN toggle) to avoid BTS7960 EN rise-time glitches.
+ */
 void MotorPwm_Init(void)
 {
+  /* --- Start PWM channels (CCR = 0, no output yet) --- */
   (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
   (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
   (void)HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_3);
@@ -68,6 +82,14 @@ void MotorPwm_Init(void)
 
   (void)HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
   (void)HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
+
+  /*
+   * CRITICAL: TIM1 is an advanced timer — its outputs stay tri-stated until
+   * the Main Output Enable (MOE) bit in BDTR is set.  Without this, motors
+   * 1 & 2 (TIM1 CH1-CH4) will never see PWM regardless of CCR values.
+   * TIM2 is a general-purpose timer and has no MOE requirement.
+   */
+  __HAL_TIM_MOE_ENABLE(&htim1);
 
   MotorPwm_StopAll();
   MotorPwm_SetEnabled(true);   /* EN always HIGH — same as ESP32. Stop = PWM 0. */

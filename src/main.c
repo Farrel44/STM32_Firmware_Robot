@@ -104,7 +104,14 @@ int main(void)
   MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
 
-  /* Motor driver disabled at boot — RTOS tasks enable after safety checks. */
+  /*
+   * Motor driver EN held LOW at boot — guarantees no glitch output while
+   * timers initialize.  MotorPwm_Init() (called by TaskPid) will:
+   *   1. Start all PWM channels with CCR = 0
+   *   2. Set MOE on TIM1 (advanced timer main output enable)
+   *   3. Explicitly zero all CCR via MotorPwm_StopAll()
+   *   4. Assert EN HIGH (permanent — stop strategy is PWM=0, not EN toggle)
+   */
   HAL_GPIO_WritePin(EN_MOTOR_GPIO_Port, EN_MOTOR_Pin, GPIO_PIN_RESET);
 
   /* Motor/encoder timers started by TaskPid / MotorPwm_Init after 4x reconfig. */

@@ -7,6 +7,11 @@
  * CubeMX defaults to TI1-only (1×); this sets TI12 (4×) with ICxFilter = 5
  * for mechanical noise rejection.
  *
+ * NOTE: This function must be called BEFORE HAL_TIM_Encoder_Start().
+ * The current call site (TaskPid, before Encoder_Start) is correct.
+ * Ideally CubeMX would generate TI12 mode directly, but the .ioc only
+ * exposes TI1/TI2 selection — TI12 requires runtime reconfiguration.
+ *
  * IMPORTANT: BOTHEDGE polarity must NOT be used — on STM32F4 encoder mode
  * it sets the reserved CC1NP bit, causing counter oscillation.
  */

@@ -361,13 +361,21 @@ static void TaskPid(void *argument)
     {
       MotorPwm_StopAll();
 
-      /* Flush ramp + PID state to prevent stale actuation on reconnect. */
+      /* Flush ALL control state to prevent stale actuation on reconnect:
+       *   - ramped setpoints → 0
+       *   - rate-limiter history → 0
+       *   - EMA-filtered RPM → 0  (prevents derivative spike on reconnect)
+       *   - PID integral + prev_error → 0
+       */
       actual_rpm1 = 0.0f;
       actual_rpm2 = 0.0f;
       actual_rpm3 = 0.0f;
       last_pwm1 = 0;
       last_pwm2 = 0;
       last_pwm3 = 0;
+      rpm1_f = 0.0f;
+      rpm2_f = 0.0f;
+      rpm3_f = 0.0f;
       PID_Reset(&pid1);
       PID_Reset(&pid2);
       PID_Reset(&pid3);
