@@ -15,6 +15,20 @@ static int16_t parse_int16_be(const uint8_t *data)
   return (int16_t)(((uint16_t)data[0] << 8) | (uint16_t)data[1]);
 }
 
+static void serialize_int32_be(uint8_t *out, int32_t val)
+{
+  out[0] = (uint8_t)((val >> 24) & 0xFF);
+  out[1] = (uint8_t)((val >> 16) & 0xFF);
+  out[2] = (uint8_t)((val >> 8) & 0xFF);
+  out[3] = (uint8_t)(val & 0xFF);
+}
+
+static void serialize_int16_be(uint8_t *out, int16_t val)
+{
+  out[0] = (uint8_t)((val >> 8) & 0xFF);
+  out[1] = (uint8_t)(val & 0xFF);
+}
+
 void SerialProtoRx_Init(SerialProtoRx *rx)
 {
   rx->idx = 0;
@@ -74,31 +88,33 @@ void SerialProto_BuildFeedback(const FeedbackPacket *fb, uint8_t out_buf[FEEDBAC
   out_buf[idx++] = PACKET_HEADER;
 
   /* Tick1 */
-  out_buf[idx++] = (uint8_t)((fb->tick1 >> 24) & 0xFF);
-  out_buf[idx++] = (uint8_t)((fb->tick1 >> 16) & 0xFF);
-  out_buf[idx++] = (uint8_t)((fb->tick1 >> 8) & 0xFF);
-  out_buf[idx++] = (uint8_t)(fb->tick1 & 0xFF);
+  serialize_int32_be(&out_buf[idx], fb->tick1);
+  idx += 4;
 
   /* Tick2 */
-  out_buf[idx++] = (uint8_t)((fb->tick2 >> 24) & 0xFF);
-  out_buf[idx++] = (uint8_t)((fb->tick2 >> 16) & 0xFF);
-  out_buf[idx++] = (uint8_t)((fb->tick2 >> 8) & 0xFF);
-  out_buf[idx++] = (uint8_t)(fb->tick2 & 0xFF);
+  serialize_int32_be(&out_buf[idx], fb->tick2);
+  idx += 4;
 
   /* Tick3 */
-  out_buf[idx++] = (uint8_t)((fb->tick3 >> 24) & 0xFF);
-  out_buf[idx++] = (uint8_t)((fb->tick3 >> 16) & 0xFF);
-  out_buf[idx++] = (uint8_t)((fb->tick3 >> 8) & 0xFF);
-  out_buf[idx++] = (uint8_t)(fb->tick3 & 0xFF);
+  serialize_int32_be(&out_buf[idx], fb->tick3);
+  idx += 4;
 
-  /* Gyro Z */
-  out_buf[idx++] = (uint8_t)((fb->gyro_z >> 8) & 0xFF);
-  out_buf[idx++] = (uint8_t)(fb->gyro_z & 0xFF);
+  /* Gyro X/Y/Z (EMA-filtered, milli-rad/s) */
+  serialize_int16_be(&out_buf[idx], fb->gyro_x);
+  idx += 2;
+  serialize_int16_be(&out_buf[idx], fb->gyro_y);
+  idx += 2;
+  serialize_int16_be(&out_buf[idx], fb->gyro_z);
+  idx += 2;
 
-  /* Accel Z */
-  out_buf[idx++] = (uint8_t)((fb->accel_z >> 8) & 0xFF);
-  out_buf[idx++] = (uint8_t)(fb->accel_z & 0xFF);
+  /* Accel X/Y/Z (raw, milli-m/s²) */
+  serialize_int16_be(&out_buf[idx], fb->accel_x);
+  idx += 2;
+  serialize_int16_be(&out_buf[idx], fb->accel_y);
+  idx += 2;
+  serialize_int16_be(&out_buf[idx], fb->accel_z);
+  idx += 2;
 
-  /* Checksum — XOR of bytes 0..(N-2), matching Python-side verification. */
+  /* XOR checksum over bytes 0..N-2 */
   out_buf[idx++] = checksum_xor(out_buf, FEEDBACK_PACKET_SIZE - 1);
 }

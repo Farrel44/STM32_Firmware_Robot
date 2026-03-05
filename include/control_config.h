@@ -59,11 +59,13 @@
 /* Snap-to-zero threshold for float residue in ramped setpoint. */
 #define CONTROL_ZERO_THRESHOLD           (0.3f)
 
-/* Complementary filter alpha — 95 % gyro / 5 % accel.
- * tau = dt/(1-a) ~ 0.2 s; fast enough for tilt, slow enough to reject
- * motor vibration on the accelerometer.
+/* Complementary filter alpha — 70 % gyro / 30 % accel.
+ * tau = dt/(1-a) ~ 33 ms  →  f_c ≈ 4.8 Hz.
+ * Faster convergence to true tilt while still rejecting vibration
+ * above ~5 Hz.  Previous 0.95 gave f_c ≈ 0.8 Hz — too sluggish
+ * for rapid tilt changes common in omni-drive manoeuvres.
  */
-#define CONTROL_IMU_FILTER_ALPHA         (0.95f)
+#define CONTROL_IMU_FILTER_ALPHA         (0.70f)
 
 /* Auto-disable IMU after this many consecutive I2C failures. */
 #define CONTROL_IMU_ERROR_THRESHOLD      (10)

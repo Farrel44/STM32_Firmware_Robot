@@ -57,9 +57,19 @@ static volatile int32_t tick1_accum = 0;
 static volatile int32_t tick2_accum = 0;
 static volatile int32_t tick3_accum = 0;
 
-/* Filtered IMU outputs in milli-rad(/s) — written by TaskImu, read by TaskSerial. */
+/*
+ * Filtered IMU outputs — written by TaskImu, read by TaskSerial.
+ * All 6 values form a consistent snapshot; use a critical section when
+ * reading or writing the full set to avoid torn reads across task boundaries.
+ *
+ * Gyro: milli-rad/s (EMA-filtered).  Accel: milli-m/s² (raw, hardware DLPF only).
+ */
+static volatile int16_t imu_gyro_x = 0;
+static volatile int16_t imu_gyro_y = 0;
 static volatile int16_t imu_gyro_z = 0;
-static volatile int16_t imu_angle_x = 0;
+static volatile int16_t imu_accel_x = 0;
+static volatile int16_t imu_accel_y = 0;
+static volatile int16_t imu_accel_z = 0;
 static volatile bool imu_ready = false;
 
 static SerialProtoRx serial_rx;
@@ -301,6 +311,28 @@ static void TaskPid(void *argument)
   {
     (void)osThreadFlagsWait(PID_TICK_FLAG, osFlagsWaitAny, osWaitForever);
 
+    /*
+     * ENCODER OVERFLOW SAFETY ANALYSIS (Rec 5)
+     *
+     * Hardware: TIM3, TIM4, TIM8 — 16-bit counters (0–65535).
+     * Encoder resolution: 380 ticks/wheel_revolution.
+     * Max motor speed: 600 RPM → max wheel speed ≈ 600 RPM
+     *   (gearbox ratio baked into ticks_per_rev definition).
+     * Max tick rate: 600 RPM × 380 / 60 = 3800 ticks/second.
+     *
+     * Overflow time: 65536 / 3800 ≈ 17.2 seconds.
+     *
+     * SAFETY: TaskPid reads counters at 200 Hz (5 ms period).
+     * Max ticks per read: 3800 × 0.005 = 19 ticks  ≪  32768.
+     * Conclusion: Counter wrap is handled safely by the 16-bit
+     * subtraction below, and overflow cannot occur between
+     * consecutive reads at 200 Hz.
+     *
+     * CAVEAT: If this task is blocked for >17 s (debugger breakpoint,
+     * priority inversion), the delta calculation will be incorrect.
+     * In production, ensure no higher-priority task can starve TaskPid
+     * for that duration.
+     */
     const uint16_t enc1_now = (uint16_t)__HAL_TIM_GET_COUNTER(&htim3);
     const uint16_t enc2_now = (uint16_t)__HAL_TIM_GET_COUNTER(&htim4);
     const uint16_t enc3_now = (uint16_t)__HAL_TIM_GET_COUNTER(&htim8);
@@ -426,7 +458,7 @@ static void TaskPid(void *argument)
  * Shared resources:
  *   tick_accum   — read+reset under critical section (vs TaskPid).
  *   target_rpm   — zeroed under critical section on watchdog timeout (vs UART ISR).
- *   imu_gyro/angle — read (atomic int16_t, no lock needed).
+ *   imu_gyro/accel — read under critical section (vs TaskImu).
  */
 static void TaskSerial(void *argument)
 {
@@ -467,12 +499,26 @@ static void TaskSerial(void *argument)
     tick3_accum = 0;
     taskEXIT_CRITICAL();
 
+    /* Snapshot IMU values (atomic w.r.t. TaskImu). */
+    taskENTER_CRITICAL();
+    const int16_t gx = imu_gyro_x;
+    const int16_t gy = imu_gyro_y;
+    const int16_t gz = imu_gyro_z;
+    const int16_t ax = imu_accel_x;
+    const int16_t ay = imu_accel_y;
+    const int16_t az = imu_accel_z;
+    taskEXIT_CRITICAL();
+
     FeedbackPacket fb = {
       .tick1 = t1,
       .tick2 = t2,
       .tick3 = t3,
-      .gyro_z = imu_gyro_z,
-      .accel_z = imu_angle_x,
+      .gyro_x = gx,
+      .gyro_y = gy,
+      .gyro_z = gz,
+      .accel_x = ax,
+      .accel_y = ay,
+      .accel_z = az,
     };
 
     uint8_t pkt[FEEDBACK_PACKET_SIZE];
@@ -486,11 +532,16 @@ static void TaskSerial(void *argument)
 }
 
 /*
- * TaskImu — 100 Hz MPU6050 polling with complementary + EMA filtering.
+ * TaskImu — 100 Hz MPU6050 polling with EMA-filtered gyro output.
  * Priority: osPriorityBelowNormal (non-critical for motor safety).
  *
- * Outputs (milli-rad units): imu_gyro_z (yaw rate), imu_angle_x (pitch).
+ * Outputs (milli-unit int16, written under critical section):
+ *   imu_gyro_x/y/z  — EMA-filtered angular rate (milli-rad/s)
+ *   imu_accel_x/y/z — raw linear acceleration (milli-m/s²)
+ *
  * Self-disables after CONTROL_IMU_ERROR_THRESHOLD consecutive I2C failures.
+ * When disabled, shared variables freeze at their last valid value; TaskSerial
+ * reads zeros only at boot (initial value) which is safe.
  */
 static void TaskImu(void *argument)
 {
@@ -507,9 +558,9 @@ static void TaskImu(void *argument)
   imu_ready = true;
 
   uint8_t error_count = 0;
-  float filtered_angle_x = 0.0f;
+  float filtered_gyro_x = 0.0f;
+  float filtered_gyro_y = 0.0f;
   float filtered_gyro_z = 0.0f;
-  TickType_t last_tick = xTaskGetTickCount();
 
   const float alpha = CONTROL_IMU_FILTER_ALPHA;
   const float one_minus_alpha = 1.0f - alpha;
@@ -534,30 +585,29 @@ static void TaskImu(void *argument)
     Mpu6050_Data data;
     Mpu6050_ConvertToPhysical(&raw, &data);
 
-    const TickType_t now_tick = xTaskGetTickCount();
-    float dt = (float)(now_tick - last_tick) / 1000.0f;
-    last_tick = now_tick;
-
-    /* Clamp dt against tick wrap or scheduling jitter. */
-    if (dt < 0.001f || dt > 0.1f)
-    {
-      dt = 0.01f;
-    }
-
-    /* Accelerometer-derived pitch (gravity reference). */
-    const float ax2 = data.accel_x * data.accel_x;
-    const float az2 = data.accel_z * data.accel_z;
-    const float accel_angle_x = atan2f(data.accel_y, sqrtf(ax2 + az2));
-
-    /* Complementary filter: gyro high-pass + accel low-pass. */
-    filtered_angle_x = alpha * (filtered_angle_x + data.gyro_x * dt)
-                     + one_minus_alpha * accel_angle_x;
-
-    /* EMA-filtered yaw rate for odometry fusion. */
+    /* EMA low-pass on all 3 gyro axes to reject motor vibration.
+     * Accel is left unfiltered — the MPU6050 hardware DLPF at 44 Hz
+     * is sufficient, and accel filtering would add lag to tilt estimates. */
+    filtered_gyro_x = alpha * filtered_gyro_x + one_minus_alpha * data.gyro_x;
+    filtered_gyro_y = alpha * filtered_gyro_y + one_minus_alpha * data.gyro_y;
     filtered_gyro_z = alpha * filtered_gyro_z + one_minus_alpha * data.gyro_z;
 
-    imu_gyro_z = (int16_t)(filtered_gyro_z * 1000.0f);
-    imu_angle_x = (int16_t)(filtered_angle_x * 1000.0f);
+    /* Convert to milli-units and write as an atomic snapshot. */
+    const int16_t gx = (int16_t)(filtered_gyro_x * 1000.0f);
+    const int16_t gy = (int16_t)(filtered_gyro_y * 1000.0f);
+    const int16_t gz = (int16_t)(filtered_gyro_z * 1000.0f);
+    const int16_t ax_out = (int16_t)(data.accel_x * 1000.0f);
+    const int16_t ay_out = (int16_t)(data.accel_y * 1000.0f);
+    const int16_t az_out = (int16_t)(data.accel_z * 1000.0f);
+
+    taskENTER_CRITICAL();
+    imu_gyro_x = gx;
+    imu_gyro_y = gy;
+    imu_gyro_z = gz;
+    imu_accel_x = ax_out;
+    imu_accel_y = ay_out;
+    imu_accel_z = az_out;
+    taskEXIT_CRITICAL();
   }
 }
 
