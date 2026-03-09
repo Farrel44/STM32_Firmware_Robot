@@ -13,10 +13,11 @@
 /* Encoder: 7 PPR motor x 4 (quadrature) x 95/7 (gearbox) = 380 ticks/rev. */
 #define CONTROL_TICKS_PER_REV            (380.0f)
 
-/* Encoder direction inversion — compensate mounting/wiring polarity. */
+/* Encoder direction inversion — compensate mounting/wiring polarity.
+ * All encoders wired correctly by owner — no software inversion needed. */
 #define CONTROL_INVERT_ENC1              (false)
 #define CONTROL_INVERT_ENC2              (false)
-#define CONTROL_INVERT_ENC3              (true)
+#define CONTROL_INVERT_ENC3              (false)
 
 /* PWM direction inversion — compensate RPWM/LPWM wiring. */
 #define CONTROL_INVERT_PWM1              (false)
