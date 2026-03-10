@@ -132,6 +132,20 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_MEDIUM;
   HAL_GPIO_Init(DIR3_GPIO_Port, &GPIO_InitStruct);
 
+  // ADDED(phase2-ultrasonic) — Enable EXTI interrupts for ultrasonic echo pins.
+  // Priority 5 = below PID/encoder (3-4), above idle tasks.
+  HAL_NVIC_SetPriority(EXTI2_IRQn, 5, 0);       /* PB2  ECHO8 */
+  HAL_NVIC_EnableIRQ(EXTI2_IRQn);
+
+  HAL_NVIC_SetPriority(EXTI4_IRQn, 5, 0);       /* PC4  ECHO5 */
+  HAL_NVIC_EnableIRQ(EXTI4_IRQn);
+
+  HAL_NVIC_SetPriority(EXTI9_5_IRQn, 5, 0);     /* PC5/PC8/PC9  ECHO6/1/2 */
+  HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
+
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 5, 0);   /* PC10/PC11/PB12  ECHO3/4/7 */
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
+
 }
 
 /* USER CODE BEGIN 2 */

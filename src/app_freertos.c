@@ -21,6 +21,7 @@
 #include "motor_pwm.h"
 #include "mpu6050.h"
 #include "i2c.h"
+#include "ultrasonic.h"  // ADDED(phase2-ultrasonic)
 
 #include "FreeRTOS.h"
 #include "task.h"
@@ -611,12 +612,24 @@ static void TaskImu(void *argument)
   }
 }
 
+// ADDED(phase2-ultrasonic) — Round-robin ultrasonic measurement task.
 static void TaskUltrasonic(void *argument)
 {
   (void)argument;
+
+  /* Initialise DWT cycle counter and reset all echo capture states. */
+  Ultrasonic_Init();
+
   for (;;)
   {
-    /* TODO: schedule ultrasonic trigger pulses; echo timing via EXTI + DWT. */
-    osDelay(50);
+    /* Round-robin: trigger 4 sensor pairs sequentially.
+     * Each pair: trigger -> wait for echo -> process captures.
+     * Total cycle: 4 x 60 ms = 240 ms -> ~4 Hz update rate. */
+    for (uint8_t pair = 0; pair < 4; pair++)
+    {
+      Ultrasonic_TriggerPair(pair);
+      osDelay(ULTRASONIC_CYCLE_DELAY_MS);
+      Ultrasonic_ProcessCaptures(pair);
+    }
   }
 }
