@@ -1,4 +1,5 @@
 #include "serial_protocol.h"
+#include "ultrasonic.h"  // ADDED(phase2-ultrasonic)
 
 static uint8_t checksum_xor(const uint8_t *data, size_t len)
 {
@@ -24,6 +25,17 @@ static void serialize_int32_be(uint8_t *out, int32_t val)
 }
 
 static void serialize_int16_be(uint8_t *out, int16_t val)
+{
+  out[0] = (uint8_t)((val >> 8) & 0xFF);
+  out[1] = (uint8_t)(val & 0xFF);
+}
+
+/**
+ * @brief Serialize uint16 value in big-endian format.
+ * @param out  Output buffer (at least 2 bytes).
+ * @param val  Value to serialize.
+ */
+static void serialize_uint16_be(uint8_t *out, uint16_t val)  // ADDED(phase2-ultrasonic)
 {
   out[0] = (uint8_t)((val >> 8) & 0xFF);
   out[1] = (uint8_t)(val & 0xFF);
@@ -114,6 +126,13 @@ void SerialProto_BuildFeedback(const FeedbackPacket *fb, uint8_t out_buf[FEEDBAC
   idx += 2;
   serialize_int16_be(&out_buf[idx], fb->accel_z);
   idx += 2;
+
+  /* Ultrasonic distance data (8 sensors x uint16 BE, 0xFFFF = invalid) */  // ADDED(phase2-ultrasonic)
+  for (uint8_t i = 0; i < 8; i++)
+  {
+    serialize_uint16_be(&out_buf[idx], fb->ultrasonic_mm[i]);
+    idx += 2;
+  }
 
   /* XOR checksum over bytes 0..N-2 */
   out_buf[idx++] = checksum_xor(out_buf, FEEDBACK_PACKET_SIZE - 1);

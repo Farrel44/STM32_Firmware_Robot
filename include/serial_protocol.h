@@ -14,7 +14,7 @@ extern "C" {
 #define WATCHDOG_TIMEOUT_MS    250   /* ~12 missed 50 Hz packets */
 
 /*
- * Feedback packet layout (STM32 → Pi): 26 bytes
+ * Feedback packet layout (STM32 → Pi): 42 bytes
  *
  * Byte  Field            Type        Units (on wire)
  * ----  -----            ----        ---------------
@@ -28,13 +28,28 @@ extern "C" {
  * 19-20 AccelX           int16 BE    milli-m/s²   (raw, hardware DLPF only)
  * 21-22 AccelY           int16 BE    milli-m/s²   (raw, hardware DLPF only)
  * 23-24 AccelZ           int16 BE    milli-m/s²   (raw, hardware DLPF only)
- *   25  XOR checksum     uint8       XOR of bytes 0..24
+ * 25-26 US0 distance_mm  uint16 BE   DEPAN-A   (0xFFFF = invalid)
+ * 27-28 US1 distance_mm  uint16 BE   DEPAN-B   (0xFFFF = invalid)
+ * 29-30 US2 distance_mm  uint16 BE   KANAN-A   (0xFFFF = invalid)
+ * 31-32 US3 distance_mm  uint16 BE   KANAN-B   (0xFFFF = invalid)
+ * 33-34 US4 distance_mm  uint16 BE   BELAKANG-A(0xFFFF = invalid)
+ * 35-36 US5 distance_mm  uint16 BE   BELAKANG-B(0xFFFF = invalid)
+ * 37-38 US6 distance_mm  uint16 BE   KIRI-A    (0xFFFF = invalid)
+ * 39-40 US7 distance_mm  uint16 BE   KIRI-B    (0xFFFF = invalid)
+ *   41  XOR checksum     uint8       XOR of bytes 0..40
  *
- * Previous 18-byte format carried only GyroZ + AngleX (filtered pitch).
- * This expanded format provides all 6 axes so the ROS2 side can publish
- * a fully-populated sensor_msgs/Imu and enable EKF sensor fusion.
+ * ADDED(phase2-ultrasonic): Extended from 26 to 42 bytes.
+ * Ultrasonic data appended after IMU fields.
+ * Invalid/timeout sensors report 0xFFFF.
  */
-#define FEEDBACK_PACKET_SIZE   26
+#define FEEDBACK_PACKET_SIZE   42
+
+/* Byte offset where ultrasonic data begins in feedback packet. */  // ADDED(phase2-ultrasonic)
+#define ULTRASONIC_DATA_OFFSET 25
+/* Total bytes of ultrasonic data: 8 sensors x 2 bytes (uint16 BE). */  // ADDED(phase2-ultrasonic)
+#define ULTRASONIC_DATA_SIZE   16
+/* Sentinel value for invalid/timeout ultrasonic reading. */  // ADDED(phase2-ultrasonic)
+#define ULTRASONIC_INVALID_VALUE 0xFFFF
 
 typedef struct
 {
@@ -55,6 +70,7 @@ typedef struct
   int16_t accel_x;  /* milli-m/s² (raw) */
   int16_t accel_y;  /* milli-m/s² (raw) */
   int16_t accel_z;  /* milli-m/s² (raw) */
+  uint16_t ultrasonic_mm[8];  /* distance mm per sensor, 0xFFFF=invalid */  // ADDED(phase2-ultrasonic)
 } FeedbackPacket;
 
 typedef struct

@@ -510,6 +510,10 @@ static void TaskSerial(void *argument)
     const int16_t az = imu_accel_z;
     taskEXIT_CRITICAL();
 
+    /* Snapshot ultrasonic data (atomic w.r.t. TaskUltrasonic). */  // ADDED(phase2-ultrasonic)
+    UltrasonicData_t us_snap;
+    Ultrasonic_GetData(&us_snap);
+
     FeedbackPacket fb = {
       .tick1 = t1,
       .tick2 = t2,
@@ -520,7 +524,14 @@ static void TaskSerial(void *argument)
       .accel_x = ax,
       .accel_y = ay,
       .accel_z = az,
+      .ultrasonic_mm = {0},  // ADDED(phase2-ultrasonic)
     };
+
+    /* Fill ultrasonic: valid sensors get distance_mm, invalid get 0xFFFF. */  // ADDED(phase2-ultrasonic)
+    for (uint8_t i = 0; i < 8; i++)
+    {
+      fb.ultrasonic_mm[i] = us_snap.valid[i] ? us_snap.distance_mm[i] : ULTRASONIC_INVALID_VALUE;
+    }
 
     uint8_t pkt[FEEDBACK_PACKET_SIZE];
     SerialProto_BuildFeedback(&fb, pkt);
