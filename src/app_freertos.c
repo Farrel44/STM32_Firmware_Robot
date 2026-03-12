@@ -80,6 +80,7 @@ static uint8_t uart2_rx_dma_buf[64];
 static volatile uint32_t dbg_rx_count = 0;
 static volatile uint32_t dbg_parse_ok = 0;
 static volatile uint32_t dbg_parse_fail = 0;
+static volatile uint32_t dbg_dma_rearm_fail = 0;
 
 /* CMSIS-RTOS2 init -----------------------------------------------------------*/
 void MX_FREERTOS_Init(void)
@@ -140,7 +141,14 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t size)
     dbg_rx_count++;
 
     CommandPacket cmd;
-    (void)SerialProtoRx_ParseBytes(&serial_rx, uart2_rx_dma_buf, (size_t)size, &cmd);
+    cmd.valid = false;
+
+    /* Guard: IDLE can fire with size=0 on STM32F4 if line was idle
+     * when DMA was armed.  Skip parse to avoid false parse_fail count. */
+    if (size > 0)
+    {
+      (void)SerialProtoRx_ParseBytes(&serial_rx, uart2_rx_dma_buf, (size_t)size, &cmd);
+    }
 
     if (cmd.valid)
     {
@@ -166,6 +174,7 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t size)
     else
     {
       /* Re-arm failed (HAL_BUSY/HAL_ERROR).  Force RxState ready and retry. */
+      dbg_dma_rearm_fail++;
       huart2.RxState = HAL_UART_STATE_READY;
       rc = HAL_UARTEx_ReceiveToIdle_DMA(
           &huart2, uart2_rx_dma_buf, sizeof(uart2_rx_dma_buf));
@@ -515,6 +524,18 @@ static void TaskSerial(void *argument)
       target_rpm2 = 0;
       target_rpm3 = 0;
       taskEXIT_CRITICAL();
+
+      /* DMA recovery: if no valid cmd has EVER arrived, DMA may be stuck.
+       * Re-arm it periodically (every ~1s = 50 ticks at 50Hz). */
+      if (dbg_parse_ok == 0)
+      {
+        huart2.RxState = HAL_UART_STATE_READY;
+        if (HAL_UARTEx_ReceiveToIdle_DMA(
+                &huart2, uart2_rx_dma_buf, sizeof(uart2_rx_dma_buf)) == HAL_OK)
+        {
+          __HAL_DMA_DISABLE_IT(huart2.hdmarx, DMA_IT_HT);
+        }
+      }
     }
 
     /* Atomically snapshot and reset tick accumulators. */
