@@ -42,7 +42,7 @@ extern "C" {
  * Ultrasonic data appended after IMU fields.
  * Invalid/timeout sensors report 0xFFFF.
  */
-#define FEEDBACK_PACKET_SIZE   42
+#define FEEDBACK_PACKET_SIZE   48
 
 /* Byte offset where ultrasonic data begins in feedback packet. */  // ADDED(phase2-ultrasonic)
 #define ULTRASONIC_DATA_OFFSET 25
@@ -50,6 +50,10 @@ extern "C" {
 #define ULTRASONIC_DATA_SIZE   16
 /* Sentinel value for invalid/timeout ultrasonic reading. */  // ADDED(phase2-ultrasonic)
 #define ULTRASONIC_INVALID_VALUE 0xFFFF
+
+/* Diagnostic counters offset (after ultrasonic, before checksum). */
+#define DIAG_DATA_OFFSET       41
+#define DIAG_DATA_SIZE         6   /* 3 x uint16 BE */
 
 typedef struct
 {
@@ -71,6 +75,9 @@ typedef struct
   int16_t accel_y;  /* milli-m/s² (raw) */
   int16_t accel_z;  /* milli-m/s² (raw) */
   uint16_t ultrasonic_mm[8];  /* distance mm per sensor, 0xFFFF=invalid */  // ADDED(phase2-ultrasonic)
+  uint16_t dbg_rx_count;       /* DMA callback fire count (wraps at 65535) */
+  uint16_t dbg_parse_ok;       /* cmd.valid == true count */
+  uint16_t dbg_parse_fail;     /* cmd.valid == false count */
 } FeedbackPacket;
 
 typedef struct

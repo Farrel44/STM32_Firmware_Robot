@@ -76,6 +76,11 @@ static volatile bool imu_ready = false;
 static SerialProtoRx serial_rx;
 static uint8_t uart2_rx_dma_buf[64];
 
+/* Diagnostic counters — written by ISR, read by TaskSerial. */
+static volatile uint32_t dbg_rx_count = 0;
+static volatile uint32_t dbg_parse_ok = 0;
+static volatile uint32_t dbg_parse_fail = 0;
+
 /* CMSIS-RTOS2 init -----------------------------------------------------------*/
 void MX_FREERTOS_Init(void)
 {
@@ -132,21 +137,43 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t size)
 {
   if (huart->Instance == USART2)
   {
+    dbg_rx_count++;
+
     CommandPacket cmd;
     (void)SerialProtoRx_ParseBytes(&serial_rx, uart2_rx_dma_buf, (size_t)size, &cmd);
 
     if (cmd.valid)
     {
+      dbg_parse_ok++;
       target_rpm1 = clamp_rpm(cmd.rpm1, CONTROL_MAX_RPM);
       target_rpm2 = clamp_rpm(cmd.rpm2, CONTROL_MAX_RPM);
       target_rpm3 = clamp_rpm(cmd.rpm3, CONTROL_MAX_RPM);
       last_valid_cmd_tick = xTaskGetTickCountFromISR();
       comm_healthy = true;
     }
+    else
+    {
+      dbg_parse_fail++;
+    }
 
     /* Re-arm DMA reception (half-transfer IRQ disabled — only idle-line fires). */
-    (void)HAL_UARTEx_ReceiveToIdle_DMA(&huart2, uart2_rx_dma_buf, sizeof(uart2_rx_dma_buf));
-    __HAL_DMA_DISABLE_IT(huart2.hdmarx, DMA_IT_HT);
+    HAL_StatusTypeDef rc = HAL_UARTEx_ReceiveToIdle_DMA(
+        &huart2, uart2_rx_dma_buf, sizeof(uart2_rx_dma_buf));
+    if (rc == HAL_OK)
+    {
+      __HAL_DMA_DISABLE_IT(huart2.hdmarx, DMA_IT_HT);
+    }
+    else
+    {
+      /* Re-arm failed (HAL_BUSY/HAL_ERROR).  Force RxState ready and retry. */
+      huart2.RxState = HAL_UART_STATE_READY;
+      rc = HAL_UARTEx_ReceiveToIdle_DMA(
+          &huart2, uart2_rx_dma_buf, sizeof(uart2_rx_dma_buf));
+      if (rc == HAL_OK)
+      {
+        __HAL_DMA_DISABLE_IT(huart2.hdmarx, DMA_IT_HT);
+      }
+    }
   }
 }
 
@@ -525,6 +552,9 @@ static void TaskSerial(void *argument)
       .accel_y = ay,
       .accel_z = az,
       .ultrasonic_mm = {0},  // ADDED(phase2-ultrasonic)
+      .dbg_rx_count = (uint16_t)(dbg_rx_count & 0xFFFF),
+      .dbg_parse_ok = (uint16_t)(dbg_parse_ok & 0xFFFF),
+      .dbg_parse_fail = (uint16_t)(dbg_parse_fail & 0xFFFF),
     };
 
     /* Fill ultrasonic: valid sensors get distance_mm, invalid get 0xFFFF. */  // ADDED(phase2-ultrasonic)

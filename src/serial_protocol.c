@@ -134,6 +134,14 @@ void SerialProto_BuildFeedback(const FeedbackPacket *fb, uint8_t out_buf[FEEDBAC
     idx += 2;
   }
 
+  /* Diagnostic counters (3 x uint16 BE) */
+  serialize_uint16_be(&out_buf[idx], fb->dbg_rx_count);
+  idx += 2;
+  serialize_uint16_be(&out_buf[idx], fb->dbg_parse_ok);
+  idx += 2;
+  serialize_uint16_be(&out_buf[idx], fb->dbg_parse_fail);
+  idx += 2;
+
   /* XOR checksum over bytes 0..N-2 */
   out_buf[idx++] = checksum_xor(out_buf, FEEDBACK_PACKET_SIZE - 1);
 }
