@@ -14,7 +14,7 @@ extern "C" {
 #define WATCHDOG_TIMEOUT_MS    250   /* ~12 missed 50 Hz packets */
 
 /*
- * Feedback packet layout (STM32 → Pi): 48 bytes
+ * Feedback packet layout (STM32 → Pi): 42 bytes
  *
  * Byte  Field            Type        Units (on wire)
  * ----  -----            ----        ---------------
@@ -36,16 +36,12 @@ extern "C" {
  * 35-36 US5 distance_mm  uint16 BE   BELAKANG-B(0xFFFF = invalid)
  * 37-38 US6 distance_mm  uint16 BE   KIRI-A    (0xFFFF = invalid)
  * 39-40 US7 distance_mm  uint16 BE   KIRI-B    (0xFFFF = invalid)
- * 41-42 dbg_rx_count     uint16 BE   DMA callback count (wraps)
- * 43-44 dbg_parse_ok     uint16 BE   valid command count
- * 45-46 dbg_parse_fail   uint16 BE   invalid command count
- *   47  XOR checksum     uint8       XOR of bytes 0..46
+ *   41  XOR checksum     uint8       XOR of bytes 0..40
  *
  * ADDED(phase2-ultrasonic): ultrasonic data after IMU fields.
- * ADDED(diag): diagnostic counters after ultrasonic.
  * Invalid/timeout sensors report 0xFFFF.
  */
-#define FEEDBACK_PACKET_SIZE   48
+#define FEEDBACK_PACKET_SIZE   42
 
 /* Byte offset where ultrasonic data begins in feedback packet. */  // ADDED(phase2-ultrasonic)
 #define ULTRASONIC_DATA_OFFSET 25
@@ -53,10 +49,6 @@ extern "C" {
 #define ULTRASONIC_DATA_SIZE   16
 /* Sentinel value for invalid/timeout ultrasonic reading. */  // ADDED(phase2-ultrasonic)
 #define ULTRASONIC_INVALID_VALUE 0xFFFF
-
-/* Diagnostic counters offset (after ultrasonic, before checksum). */
-#define DIAG_DATA_OFFSET       41
-#define DIAG_DATA_SIZE         6   /* 3 x uint16 BE */
 
 typedef struct
 {
@@ -78,9 +70,6 @@ typedef struct
   int16_t accel_y;  /* milli-m/s² (raw) */
   int16_t accel_z;  /* milli-m/s² (raw) */
   uint16_t ultrasonic_mm[8];  /* distance mm per sensor, 0xFFFF=invalid */  // ADDED(phase2-ultrasonic)
-  uint16_t dbg_rx_count;       /* DMA callback fire count (wraps at 65535) */
-  uint16_t dbg_parse_ok;       /* cmd.valid == true count */
-  uint16_t dbg_parse_fail;     /* cmd.valid == false count */
 } FeedbackPacket;
 
 typedef struct
