@@ -29,6 +29,6 @@ void EncoderQuad_ConfigureFullQuad(TIM_HandleTypeDef *htim)
   cfg.IC2Selection = TIM_ICSELECTION_DIRECTTI;
   cfg.IC2Prescaler = TIM_ICPSC_DIV1;
   cfg.IC2Filter = 5;
-
-  (void)HAL_TIM_Encoder_Init(htim, &cfg);
+  // Enc udh di init oleh cubemx
+  // (void)HAL_TIM_Encoder_Init(htim, &cfg);
 }
