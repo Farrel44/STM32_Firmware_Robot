@@ -322,7 +322,7 @@ static void TaskPid(void *argument)
 
   /* Start 200 Hz deterministic tick source (TIM6 update interrupt). */
   (void)HAL_TIM_Base_Start_IT(&htim6);
-
+  
   float rpm1 = 0.0f;
   float rpm2 = 0.0f;
   float rpm3 = 0.0f;
